@@ -11,7 +11,7 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_FILE = BASE_DIR / "data" / "stok.json"
 LOG_FILE = BASE_DIR / "data" / "islem_loglari.json"
 
-TELEGRAM_TOKEN = "8763896740:AAEkVROURn64S9GAgfKl0FEWa-EHCb2Jj0Q"
+BOT_TOKEN = "8763896740:AAEWoDsgTcDjVLaHbsdjLQaJaLrw73HAI9M"
 ADMIN_CHAT_ID = "7082029749"
 
 logging.basicConfig(
@@ -31,10 +31,13 @@ def ensure_files() -> None:
                 "kayit_002",
                 "kayit_003",
                 "kayit_004",
-                "kayit_005"
+                "kayit_005",
             ]
         }
-        DATA_FILE.write_text(json.dumps(sample_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        DATA_FILE.write_text(
+            json.dumps(sample_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
     if not LOG_FILE.exists():
         LOG_FILE.write_text("[]", encoding="utf-8")
@@ -187,7 +190,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 def main() -> None:
+    global BOT_TOKEN, ADMIN_CHAT_ID
+
     ensure_files()
+
+    BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+    ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "").strip()
+
+    logger.info("BOT_TOKEN mevcut mu?: %s", bool(BOT_TOKEN))
+    logger.info("ADMIN_CHAT_ID mevcut mu?: %s", bool(ADMIN_CHAT_ID))
 
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN ortam değişkeni eksik.")
@@ -205,7 +216,7 @@ def main() -> None:
     application.add_handler(CommandHandler("ver", ver))
 
     logger.info("Bot başlatılıyor...")
-    application.run_polling()
+    application.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
