@@ -11,8 +11,8 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_FILE = BASE_DIR / "data" / "stok.json"
 LOG_FILE = BASE_DIR / "data" / "islem_loglari.json"
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "")
+BOT_TOKEN = os.getenv("8763896740:AAF7cdtm51eGmg2fmJnaS9ee599JGCkyT-g", "")
+ADMIN_CHAT_ID = os.getenv("7082029749", "")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
