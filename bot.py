@@ -1,18 +1,14 @@
-import json
 import logging
 import os
-from pathlib import Path
 from typing import List, Tuple
 
+import psycopg
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-BASE_DIR = Path(__file__).resolve().parent
-DATA_FILE = BASE_DIR / "data" / "stok.json"
-LOG_FILE = BASE_DIR / "data" / "islem_loglari.json"
-
 BOT_TOKEN = ""
 ADMIN_CHAT_ID = ""
+DATABASE_URL = ""
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -21,55 +17,31 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def ensure_files() -> None:
-    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-    if not DATA_FILE.exists():
-        sample_data = {
-            "stok": [
-                "kayit_001",
-                "kayit_002",
-                "kayit_003",
-                "kayit_004",
-                "kayit_005",
-            ]
-        }
-        DATA_FILE.write_text(
-            json.dumps(sample_data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
-    if not LOG_FILE.exists():
-        LOG_FILE.write_text("[]", encoding="utf-8")
+def get_connection():
+    return psycopg.connect(DATABASE_URL)
 
 
-def load_stock() -> List[str]:
-    ensure_files()
-    data = json.loads(DATA_FILE.read_text(encoding="utf-8"))
-    return data.get("stok", [])
-
-
-def save_stock(stock: List[str]) -> None:
-    DATA_FILE.write_text(
-        json.dumps({"stok": stock}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
-def write_log(action: str, amount: int, delivered: List[str], chat_id: int) -> None:
-    logs = json.loads(LOG_FILE.read_text(encoding="utf-8"))
-    logs.append(
-        {
-            "action": action,
-            "amount": amount,
-            "delivered": delivered,
-            "chat_id": chat_id,
-        }
-    )
-    LOG_FILE.write_text(
-        json.dumps(logs, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
+def init_db() -> None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS stock_items (
+                    id SERIAL PRIMARY KEY,
+                    record_text TEXT NOT NULL UNIQUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS stock_logs (
+                    id SERIAL PRIMARY KEY,
+                    action TEXT NOT NULL,
+                    amount INTEGER NOT NULL,
+                    delivered TEXT,
+                    chat_id BIGINT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+        conn.commit()
 
 
 def is_admin(chat_id: int) -> bool:
@@ -91,17 +63,92 @@ def parse_amount(args: List[str]) -> Tuple[bool, int, str]:
     return True, amount, ""
 
 
-def remove_record(record_to_remove: str) -> bool:
-    stock = load_stock()
-    normalized_target = record_to_remove.strip().lower()
+def stock_count() -> int:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM stock_items")
+            return cur.fetchone()[0]
 
-    new_stock = [item for item in stock if item.strip().lower() != normalized_target]
 
-    if len(new_stock) == len(stock):
-        return False
+def add_record(record_text: str) -> Tuple[bool, str]:
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO stock_items (record_text) VALUES (%s)",
+                    (record_text,)
+                )
+            conn.commit()
+        return True, "Kayit eklendi."
+    except psycopg.errors.UniqueViolation:
+        return False, "Bu kayit zaten stokta var."
+    except Exception as e:
+        logger.exception("Kayit ekleme hatasi")
+        return False, f"Hata olustu: {e}"
 
-    save_stock(new_stock)
-    return True
+
+def remove_record(record_text: str) -> bool:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM stock_items WHERE LOWER(record_text) = LOWER(%s)",
+                (record_text,)
+            )
+            deleted = cur.rowcount
+        conn.commit()
+    return deleted > 0
+
+
+def list_records(limit: int = 20) -> List[str]:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT record_text FROM stock_items ORDER BY id ASC LIMIT %s",
+                (limit,)
+            )
+            rows = cur.fetchall()
+    return [row[0] for row in rows]
+
+
+def total_records() -> int:
+    return stock_count()
+
+
+def take_records(amount: int) -> List[str]:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, record_text FROM stock_items ORDER BY id ASC LIMIT %s",
+                (amount,)
+            )
+            rows = cur.fetchall()
+
+            if not rows:
+                return []
+
+            ids = [row[0] for row in rows]
+            records = [row[1] for row in rows]
+
+            cur.execute(
+                "DELETE FROM stock_items WHERE id = ANY(%s)",
+                (ids,)
+            )
+        conn.commit()
+    return records
+
+
+def write_log(action: str, amount: int, delivered: List[str], chat_id: int) -> None:
+    delivered_text = "\n".join(delivered)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO stock_logs (action, amount, delivered, chat_id)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (action, amount, delivered_text, chat_id)
+            )
+        conn.commit()
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -128,8 +175,8 @@ async def stok(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Yetkisiz kullanim.")
         return
 
-    stock = load_stock()
-    await update.message.reply_text(f"Kalan stok: {len(stock)} adet")
+    count = total_records()
+    await update.message.reply_text(f"Kalan stok: {count} adet")
 
 
 async def liste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -138,15 +185,16 @@ async def liste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Yetkisiz kullanim.")
         return
 
-    stock = load_stock()
-    if not stock:
+    records = list_records(20)
+    total = total_records()
+
+    if not records:
         await update.message.reply_text("Stok bos.")
         return
 
-    preview = stock[:20]
-    message = "Ilk kayitlar:\n\n" + "\n".join(preview)
-    if len(stock) > 20:
-        message += f"\n\n... ve {len(stock) - 20} kayit daha var."
+    message = "Ilk kayitlar:\n\n" + "\n".join(records)
+    if total > 20:
+        message += f"\n\n... ve {total - 20} kayit daha var."
 
     await update.message.reply_text(message)
 
@@ -161,12 +209,32 @@ async def ekle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Eklemek icin bir kayit yaz. Ornek: /ekle kayit_123")
         return
 
-    new_record = " ".join(context.args).strip()
-    stock = load_stock()
-    stock.append(new_record)
-    save_stock(stock)
+    record_text = " ".join(context.args).strip()
+    ok, msg = add_record(record_text)
 
-    await update.message.reply_text(f"Kayit eklendi. Yeni stok: {len(stock)}")
+    if ok:
+        await update.message.reply_text(f"{msg} Yeni stok: {total_records()}")
+    else:
+        await update.message.reply_text(msg)
+
+
+async def kaldir(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    if not is_admin(chat_id):
+        await update.message.reply_text("Yetkisiz kullanim.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Kaldirmak icin kayit yaz. Ornek: /kaldir kayit_001")
+        return
+
+    record_text = " ".join(context.args).strip()
+    removed = remove_record(record_text)
+
+    if removed:
+        await update.message.reply_text(f"Kayit kaldirildi: {record_text}")
+    else:
+        await update.message.reply_text("Boyle bir kayit bulunamadi.")
 
 
 async def ver(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -180,45 +248,29 @@ async def ver(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(error)
         return
 
-    stock = load_stock()
+    current_count = total_records()
 
-    if len(stock) == 0:
+    if current_count == 0:
         await update.message.reply_text("Stok bos.")
         return
 
-    if amount > len(stock):
+    if amount > current_count:
         await update.message.reply_text(
-            f"Yeterli stok yok. Istenen: {amount}, Kalan: {len(stock)}"
+            f"Yeterli stok yok. Istenen: {amount}, Kalan: {current_count}"
         )
         return
 
-    delivered = stock[:amount]
-    remaining = stock[amount:]
-    save_stock(remaining)
+    delivered = take_records(amount)
+
+    if not delivered:
+        await update.message.reply_text("Teslim edilecek kayit bulunamadi.")
+        return
+
     write_log("ver", amount, delivered, chat_id)
 
     message = "Teslim edilen kayitlar:\n\n" + "\n".join(delivered)
-    message += f"\n\nKalan stok: {len(remaining)}"
+    message += f"\n\nKalan stok: {total_records()}"
     await update.message.reply_text(message)
-
-
-async def kaldir(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    if not is_admin(chat_id):
-        await update.message.reply_text("Yetkisiz kullanim.")
-        return
-
-    if not context.args:
-        await update.message.reply_text("Kaldirmak icin kayit yaz. Ornek: /kaldir kayit_001")
-        return
-
-    record_to_remove = " ".join(context.args).strip()
-    removed = remove_record(record_to_remove)
-
-    if removed:
-        await update.message.reply_text(f"Kayit kaldirildi: {record_to_remove}")
-    else:
-        await update.message.reply_text("Boyle bir kayit bulunamadi.")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -226,21 +278,26 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 def main() -> None:
-    global BOT_TOKEN, ADMIN_CHAT_ID
-
-    ensure_files()
+    global BOT_TOKEN, ADMIN_CHAT_ID, DATABASE_URL
 
     BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
     ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "").strip()
+    DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 
     logger.info("BOT_TOKEN mevcut mu?: %s", bool(BOT_TOKEN))
     logger.info("ADMIN_CHAT_ID mevcut mu?: %s", bool(ADMIN_CHAT_ID))
+    logger.info("DATABASE_URL mevcut mu?: %s", bool(DATABASE_URL))
 
     if not BOT_TOKEN:
-        raise ValueError("BOT_TOKEN ortam degiskeni eksik.")
+        raise ValueError("BOT_TOKEN eksik.")
 
     if not ADMIN_CHAT_ID:
-        raise ValueError("ADMIN_CHAT_ID ortam degiskeni eksik.")
+        raise ValueError("ADMIN_CHAT_ID eksik.")
+
+    if not DATABASE_URL:
+        raise ValueError("DATABASE_URL eksik.")
+
+    init_db()
 
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
