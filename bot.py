@@ -253,3 +253,16 @@ def remove_account_from_file(filename, email_to_remove):
     except Exception as e:
         print(f"Hata: {e}")
         return False
+async def kaldir(update, context):
+    if not context.args:
+        await update.message.reply_text("kullanım:\n/kaldır mail@gmail.com")
+        return
+
+    email = context.args[0]
+
+    removed = remove_account("stok.txt", email)
+
+    if removed:
+        await update.message.reply_text(f"silindi: {email}")
+    else:
+        await update.message.reply_text("böyle bir kayıt yok")
