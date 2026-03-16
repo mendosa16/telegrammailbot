@@ -221,3 +221,35 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+def remove_account_from_file(filename, email_to_remove):
+    try:
+        with open(filename, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        new_lines = []
+        removed = False
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            parts = line.split(maxsplit=1)
+            email = parts[0].strip().lower()
+
+            if email == email_to_remove.strip().lower():
+                removed = True
+                continue
+
+            new_lines.append(line + "\n")
+
+        with open(filename, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+
+        return removed
+
+    except FileNotFoundError:
+        return False
+    except Exception as e:
+        print(f"Hata: {e}")
+        return False
