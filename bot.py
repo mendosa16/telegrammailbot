@@ -100,6 +100,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/stok - Kalan stok sayısını gösterir\n"
         "/ver 10 - Stoktan 10 kayıt verir\n"
         "/ekle kayit_006 - Stoğa tek kayıt ekler\n"
+        "/kaldır kayit_006 - Belirli kaydı stoktan siler\n"
         "/liste - İlk 20 kaydı gösterir\n"
     )
     await update.message.reply_text(text)
@@ -152,6 +153,19 @@ async def ekle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(f"Kayıt eklendi. Yeni stok: {len(stock)}")
 
 
+def remove_record(record_to_remove: str) -> bool:
+    stock = load_stock()
+    normalized_target = record_to_remove.strip().lower()
+
+    new_stock = [item for item in stock if item.strip().lower() != normalized_target]
+
+    if len(new_stock) == len(stock):
+        return False
+
+    save_stock(new_stock)
+    return True
+
+
 async def ver(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     if not is_admin(chat_id):
@@ -185,6 +199,25 @@ async def ver(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(message)
 
 
+async def kaldir(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    if not is_admin(chat_id):
+        await update.message.reply_text("Yetkisiz kullanım.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Kaldırmak için kayıt yaz. Örnek: /kaldır kayit_001")
+        return
+
+    record_to_remove = " ".join(context.args).strip()
+    removed = remove_record(record_to_remove)
+
+    if removed:
+        await update.message.reply_text(f"Kayıt kaldırıldı: {record_to_remove}")
+    else:
+        await update.message.reply_text("Böyle bir kayıt bulunamadı.")
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await start(update, context)
 
@@ -213,6 +246,7 @@ def main() -> None:
     application.add_handler(CommandHandler("stok", stok))
     application.add_handler(CommandHandler("liste", liste))
     application.add_handler(CommandHandler("ekle", ekle))
+    application.add_handler(CommandHandler("kaldır", kaldir))
     application.add_handler(CommandHandler("ver", ver))
 
     logger.info("Bot başlatılıyor...")
@@ -221,48 +255,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-def remove_account_from_file(filename, email_to_remove):
-    try:
-        with open(filename, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-
-        new_lines = []
-        removed = False
-
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-
-            parts = line.split(maxsplit=1)
-            email = parts[0].strip().lower()
-
-            if email == email_to_remove.strip().lower():
-                removed = True
-                continue
-
-            new_lines.append(line + "\n")
-
-        with open(filename, "w", encoding="utf-8") as f:
-            f.writelines(new_lines)
-
-        return removed
-
-    except FileNotFoundError:
-        return False
-    except Exception as e:
-        print(f"Hata: {e}")
-        return False
-async def kaldir(update, context):
-    if not context.args:
-        await update.message.reply_text("kullanım:\n/kaldır mail@gmail.com")
-        return
-
-    email = context.args[0]
-
-    removed = remove_account("stok.txt", email)
-
-    if removed:
-        await update.message.reply_text(f"silindi: {email}")
-    else:
-        await update.message.reply_text("böyle bir kayıt yok")
