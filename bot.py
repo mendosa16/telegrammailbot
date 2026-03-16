@@ -11,8 +11,8 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_FILE = BASE_DIR / "data" / "stok.json"
 LOG_FILE = BASE_DIR / "data" / "islem_loglari.json"
 
-BOT_TOKEN = "8763896740:AAEWoDsgTcDjVLaHbsdjLQaJaLrw73HAI9M"
-ADMIN_CHAT_ID = "7082029749"
+BOT_TOKEN = ""
+ADMIN_CHAT_ID = ""
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -66,7 +66,10 @@ def write_log(action: str, amount: int, delivered: List[str], chat_id: int) -> N
             "chat_id": chat_id,
         }
     )
-    LOG_FILE.write_text(json.dumps(logs, ensure_ascii=False, indent=2), encoding="utf-8")
+    LOG_FILE.write_text(
+        json.dumps(logs, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
 
 
 def is_admin(chat_id: int) -> bool:
@@ -75,82 +78,17 @@ def is_admin(chat_id: int) -> bool:
 
 def parse_amount(args: List[str]) -> Tuple[bool, int, str]:
     if not args:
-        return False, 0, "Adet yazman lazım. Örnek: /ver 10"
+        return False, 0, "Adet yazman lazim. Ornek: /ver 10"
 
     try:
         amount = int(args[0])
     except ValueError:
-        return False, 0, "Adet sadece sayı olmalı. Örnek: /ver 10"
+        return False, 0, "Adet sadece sayi olmali. Ornek: /ver 10"
 
     if amount <= 0:
-        return False, 0, "Adet 0'dan büyük olmalı."
+        return False, 0, "Adet 0'dan buyuk olmali."
 
     return True, amount, ""
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-
-    if not is_admin(chat_id):
-        await update.message.reply_text("Bu bot sadece yetkili kullanıcı içindir.")
-        return
-
-    text = (
-        "Merhaba. Kullanılabilir komutlar:\n\n"
-        "/stok - Kalan stok sayısını gösterir\n"
-        "/ver 10 - Stoktan 10 kayıt verir\n"
-        "/ekle kayit_006 - Stoğa tek kayıt ekler\n"
-        "/kaldır kayit_006 - Belirli kaydı stoktan siler\n"
-        "/liste - İlk 20 kaydı gösterir\n"
-    )
-    await update.message.reply_text(text)
-
-
-async def stok(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    if not is_admin(chat_id):
-        await update.message.reply_text("Yetkisiz kullanım.")
-        return
-
-    stock = load_stock()
-    await update.message.reply_text(f"Kalan stok: {len(stock)} adet")
-
-
-async def liste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    if not is_admin(chat_id):
-        await update.message.reply_text("Yetkisiz kullanım.")
-        return
-
-    stock = load_stock()
-    if not stock:
-        await update.message.reply_text("Stok boş.")
-        return
-
-    preview = stock[:20]
-    message = "İlk kayıtlar:\n\n" + "\n".join(preview)
-    if len(stock) > 20:
-        message += f"\n\n... ve {len(stock) - 20} kayıt daha var."
-
-    await update.message.reply_text(message)
-
-
-async def ekle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    if not is_admin(chat_id):
-        await update.message.reply_text("Yetkisiz kullanım.")
-        return
-
-    if not context.args:
-        await update.message.reply_text("Eklemek için bir kayıt yaz. Örnek: /ekle kayit_123")
-        return
-
-    new_record = " ".join(context.args).strip()
-    stock = load_stock()
-    stock.append(new_record)
-    save_stock(stock)
-
-    await update.message.reply_text(f"Kayıt eklendi. Yeni stok: {len(stock)}")
 
 
 def remove_record(record_to_remove: str) -> bool:
@@ -166,10 +104,75 @@ def remove_record(record_to_remove: str) -> bool:
     return True
 
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+
+    if not is_admin(chat_id):
+        await update.message.reply_text("Bu bot sadece yetkili kullanici icindir.")
+        return
+
+    text = (
+        "Merhaba. Kullanilabilir komutlar:\n\n"
+        "/stok - Kalan stok sayisini gosterir\n"
+        "/ver 10 - Stoktan 10 kayit verir\n"
+        "/ekle kayit_006 - Stoga tek kayit ekler\n"
+        "/kaldir kayit_006 - Belirli kaydi stoktan siler\n"
+        "/liste - Ilk 20 kaydi gosterir\n"
+    )
+    await update.message.reply_text(text)
+
+
+async def stok(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    if not is_admin(chat_id):
+        await update.message.reply_text("Yetkisiz kullanim.")
+        return
+
+    stock = load_stock()
+    await update.message.reply_text(f"Kalan stok: {len(stock)} adet")
+
+
+async def liste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    if not is_admin(chat_id):
+        await update.message.reply_text("Yetkisiz kullanim.")
+        return
+
+    stock = load_stock()
+    if not stock:
+        await update.message.reply_text("Stok bos.")
+        return
+
+    preview = stock[:20]
+    message = "Ilk kayitlar:\n\n" + "\n".join(preview)
+    if len(stock) > 20:
+        message += f"\n\n... ve {len(stock) - 20} kayit daha var."
+
+    await update.message.reply_text(message)
+
+
+async def ekle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    if not is_admin(chat_id):
+        await update.message.reply_text("Yetkisiz kullanim.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Eklemek icin bir kayit yaz. Ornek: /ekle kayit_123")
+        return
+
+    new_record = " ".join(context.args).strip()
+    stock = load_stock()
+    stock.append(new_record)
+    save_stock(stock)
+
+    await update.message.reply_text(f"Kayit eklendi. Yeni stok: {len(stock)}")
+
+
 async def ver(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     if not is_admin(chat_id):
-        await update.message.reply_text("Yetkisiz kullanım.")
+        await update.message.reply_text("Yetkisiz kullanim.")
         return
 
     ok, amount, error = parse_amount(context.args)
@@ -180,12 +183,12 @@ async def ver(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     stock = load_stock()
 
     if len(stock) == 0:
-        await update.message.reply_text("Stok boş.")
+        await update.message.reply_text("Stok bos.")
         return
 
     if amount > len(stock):
         await update.message.reply_text(
-            f"Yeterli stok yok. İstenen: {amount}, Kalan: {len(stock)}"
+            f"Yeterli stok yok. Istenen: {amount}, Kalan: {len(stock)}"
         )
         return
 
@@ -194,7 +197,7 @@ async def ver(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     save_stock(remaining)
     write_log("ver", amount, delivered, chat_id)
 
-    message = "Teslim edilen kayıtlar:\n\n" + "\n".join(delivered)
+    message = "Teslim edilen kayitlar:\n\n" + "\n".join(delivered)
     message += f"\n\nKalan stok: {len(remaining)}"
     await update.message.reply_text(message)
 
@@ -202,20 +205,20 @@ async def ver(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def kaldir(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     if not is_admin(chat_id):
-        await update.message.reply_text("Yetkisiz kullanım.")
+        await update.message.reply_text("Yetkisiz kullanim.")
         return
 
     if not context.args:
-        await update.message.reply_text("Kaldırmak için kayıt yaz. Örnek: /kaldır kayit_001")
+        await update.message.reply_text("Kaldirmak icin kayit yaz. Ornek: /kaldir kayit_001")
         return
 
     record_to_remove = " ".join(context.args).strip()
     removed = remove_record(record_to_remove)
 
     if removed:
-        await update.message.reply_text(f"Kayıt kaldırıldı: {record_to_remove}")
+        await update.message.reply_text(f"Kayit kaldirildi: {record_to_remove}")
     else:
-        await update.message.reply_text("Böyle bir kayıt bulunamadı.")
+        await update.message.reply_text("Boyle bir kayit bulunamadi.")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -234,10 +237,10 @@ def main() -> None:
     logger.info("ADMIN_CHAT_ID mevcut mu?: %s", bool(ADMIN_CHAT_ID))
 
     if not BOT_TOKEN:
-        raise ValueError("BOT_TOKEN ortam değişkeni eksik.")
+        raise ValueError("BOT_TOKEN ortam degiskeni eksik.")
 
     if not ADMIN_CHAT_ID:
-        raise ValueError("ADMIN_CHAT_ID ortam değişkeni eksik.")
+        raise ValueError("ADMIN_CHAT_ID ortam degiskeni eksik.")
 
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -246,10 +249,10 @@ def main() -> None:
     application.add_handler(CommandHandler("stok", stok))
     application.add_handler(CommandHandler("liste", liste))
     application.add_handler(CommandHandler("ekle", ekle))
-    application.add_handler(CommandHandler("kaldır", kaldir))
+    application.add_handler(CommandHandler("kaldir", kaldir))
     application.add_handler(CommandHandler("ver", ver))
 
-    logger.info("Bot başlatılıyor...")
+    logger.info("Bot baslatiliyor...")
     application.run_polling(drop_pending_updates=True)
 
 
