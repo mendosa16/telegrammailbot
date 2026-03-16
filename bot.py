@@ -4,7 +4,13 @@ from typing import List, Tuple
 
 import psycopg
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 BOT_TOKEN = ""
 ADMIN_CHAT_ID = ""
@@ -24,14 +30,17 @@ def get_connection():
 def init_db() -> None:
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 CREATE TABLE IF NOT EXISTS stock_items (
                     id SERIAL PRIMARY KEY,
                     record_text TEXT NOT NULL UNIQUE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
-            """)
-            cur.execute("""
+                """
+            )
+            cur.execute(
+                """
                 CREATE TABLE IF NOT EXISTS stock_logs (
                     id SERIAL PRIMARY KEY,
                     action TEXT NOT NULL,
@@ -40,7 +49,8 @@ def init_db() -> None:
                     chat_id BIGINT NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
-            """)
+                """
+            )
         conn.commit()
 
 
@@ -63,7 +73,7 @@ def parse_amount(args: List[str]) -> Tuple[bool, int, str]:
     return True, amount, ""
 
 
-def stock_count() -> int:
+def total_records() -> int:
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM stock_items")
@@ -71,12 +81,16 @@ def stock_count() -> int:
 
 
 def add_record(record_text: str) -> Tuple[bool, str]:
+    cleaned = record_text.strip()
+    if not cleaned:
+        return False, "Bos kayit eklenemez."
+
     try:
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "INSERT INTO stock_items (record_text) VALUES (%s)",
-                    (record_text,)
+                    (cleaned,),
                 )
             conn.commit()
         return True, "Kayit eklendi."
@@ -87,12 +101,51 @@ def add_record(record_text: str) -> Tuple[bool, str]:
         return False, f"Hata olustu: {e}"
 
 
+def add_records_bulk(records: List[str]) -> Tuple[int, int]:
+    cleaned_records = []
+    seen = set()
+
+    for record in records:
+        item = record.strip()
+        if not item:
+            continue
+
+        lowered = item.lower()
+        if lowered in seen:
+            continue
+
+        seen.add(lowered)
+        cleaned_records.append(item)
+
+    if not cleaned_records:
+        return 0, 0
+
+    inserted_count = 0
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            for record in cleaned_records:
+                cur.execute(
+                    """
+                    INSERT INTO stock_items (record_text)
+                    VALUES (%s)
+                    ON CONFLICT (record_text) DO NOTHING
+                    """,
+                    (record,),
+                )
+                inserted_count += cur.rowcount
+        conn.commit()
+
+    skipped_count = len(cleaned_records) - inserted_count
+    return inserted_count, skipped_count
+
+
 def remove_record(record_text: str) -> bool:
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "DELETE FROM stock_items WHERE LOWER(record_text) = LOWER(%s)",
-                (record_text,)
+                (record_text.strip(),),
             )
             deleted = cur.rowcount
         conn.commit()
@@ -104,14 +157,10 @@ def list_records(limit: int = 20) -> List[str]:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT record_text FROM stock_items ORDER BY id ASC LIMIT %s",
-                (limit,)
+                (limit,),
             )
             rows = cur.fetchall()
     return [row[0] for row in rows]
-
-
-def total_records() -> int:
-    return stock_count()
 
 
 def take_records(amount: int) -> List[str]:
@@ -119,7 +168,7 @@ def take_records(amount: int) -> List[str]:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT id, record_text FROM stock_items ORDER BY id ASC LIMIT %s",
-                (amount,)
+                (amount,),
             )
             rows = cur.fetchall()
 
@@ -131,7 +180,7 @@ def take_records(amount: int) -> List[str]:
 
             cur.execute(
                 "DELETE FROM stock_items WHERE id = ANY(%s)",
-                (ids,)
+                (ids,),
             )
         conn.commit()
     return records
@@ -139,6 +188,7 @@ def take_records(amount: int) -> List[str]:
 
 def write_log(action: str, amount: int, delivered: List[str], chat_id: int) -> None:
     delivered_text = "\n".join(delivered)
+
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -146,7 +196,7 @@ def write_log(action: str, amount: int, delivered: List[str], chat_id: int) -> N
                 INSERT INTO stock_logs (action, amount, delivered, chat_id)
                 VALUES (%s, %s, %s, %s)
                 """,
-                (action, amount, delivered_text, chat_id)
+                (action, amount, delivered_text, chat_id),
             )
         conn.commit()
 
@@ -162,11 +212,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Merhaba. Kullanilabilir komutlar:\n\n"
         "/stok - Kalan stok sayisini gosterir\n"
         "/ver 10 - Stoktan 10 kayit verir\n"
-        "/ekle kayit_006 - Stoga tek kayit ekler\n"
-        "/kaldir kayit_006 - Belirli kaydi stoktan siler\n"
+        "/ekle mail@gmail.com 123456 - Stoga tek kayit ekler\n"
+        "/kaldir mail@gmail.com 123456 - Kaydi stoktan siler\n"
         "/liste - Ilk 20 kaydi gosterir\n"
+        "Txt dosyasi gonder - Toplu kayit yukler\n"
     )
     await update.message.reply_text(text)
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await start(update, context)
 
 
 async def stok(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -206,7 +261,9 @@ async def ekle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if not context.args:
-        await update.message.reply_text("Eklemek icin bir kayit yaz. Ornek: /ekle kayit_123")
+        await update.message.reply_text(
+            "Eklemek icin bir kayit yaz. Ornek: /ekle mail@gmail.com 123456"
+        )
         return
 
     record_text = " ".join(context.args).strip()
@@ -225,7 +282,9 @@ async def kaldir(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if not context.args:
-        await update.message.reply_text("Kaldirmak icin kayit yaz. Ornek: /kaldir kayit_001")
+        await update.message.reply_text(
+            "Kaldirmak icin kayit yaz. Ornek: /kaldir mail@gmail.com 123456"
+        )
         return
 
     record_text = " ".join(context.args).strip()
@@ -273,8 +332,46 @@ async def ver(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(message)
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await start(update, context)
+async def txt_yukle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+
+    if not is_admin(chat_id):
+        await update.message.reply_text("Yetkisiz kullanim.")
+        return
+
+    if not update.message or not update.message.document:
+        await update.message.reply_text("Bir txt dosyasi gondermen lazim.")
+        return
+
+    document = update.message.document
+
+    if not document.file_name or not document.file_name.lower().endswith(".txt"):
+        await update.message.reply_text("Sadece .txt dosyasi kabul ediliyor.")
+        return
+
+    try:
+        telegram_file = await context.bot.get_file(document.file_id)
+        file_bytes = await telegram_file.download_as_bytearray()
+        content = file_bytes.decode("utf-8", errors="ignore")
+
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+
+        if not lines:
+            await update.message.reply_text("Txt dosyasi bos.")
+            return
+
+        inserted_count, skipped_count = add_records_bulk(lines)
+
+        await update.message.reply_text(
+            "Toplu yukleme tamamlandi.\n\n"
+            f"Eklendi: {inserted_count}\n"
+            f"Atlanan(tekrar/bos): {skipped_count}\n"
+            f"Guncel stok: {total_records()}"
+        )
+
+    except Exception as e:
+        logger.exception("Txt yukleme hatasi")
+        await update.message.reply_text(f"Yukleme sirasinda hata olustu: {e}")
 
 
 def main() -> None:
@@ -308,6 +405,9 @@ def main() -> None:
     application.add_handler(CommandHandler("ekle", ekle))
     application.add_handler(CommandHandler("kaldir", kaldir))
     application.add_handler(CommandHandler("ver", ver))
+    application.add_handler(
+        MessageHandler(filters.Document.FileExtension("txt"), txt_yukle)
+    )
 
     logger.info("Bot baslatiliyor...")
     application.run_polling(drop_pending_updates=True)
