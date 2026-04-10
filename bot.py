@@ -1,8 +1,10 @@
 import logging
 import os
+import sqlite3
 from typing import List, Tuple
 
 import psycopg
+from psycopg import errors as psycopg_errors
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -15,6 +17,7 @@ from telegram.ext import (
 BOT_TOKEN = ""
 ADMIN_CHAT_ID = ""
 DATABASE_URL = ""
+DB_MODE = "sqlite"  # "postgres" or "sqlite"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -23,13 +26,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def using_postgres() -> bool:
+    return DB_MODE == "postgres"
+
+
 def get_connection():
-    return psycopg.connect(DATABASE_URL)
+    if using_postgres():
+        return psycopg.connect(DATABASE_URL)
+    return sqlite3.connect("data.db")
 
 
 def init_db() -> None:
     with get_connection() as conn:
-        with conn.cursor() as cur:
+        cur = conn.cursor()
+
+        if using_postgres():
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS stock_items (
@@ -51,6 +62,29 @@ def init_db() -> None:
                 )
                 """
             )
+        else:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stock_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    record_text TEXT NOT NULL UNIQUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stock_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    action TEXT NOT NULL,
+                    amount INTEGER NOT NULL,
+                    delivered TEXT,
+                    chat_id INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+
         conn.commit()
 
 
@@ -75,9 +109,9 @@ def parse_amount(args: List[str]) -> Tuple[bool, int, str]:
 
 def total_records() -> int:
     with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM stock_items")
-            return cur.fetchone()[0]
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM stock_items")
+        return cur.fetchone()[0]
 
 
 def add_record(record_text: str) -> Tuple[bool, str]:
@@ -87,14 +121,20 @@ def add_record(record_text: str) -> Tuple[bool, str]:
 
     try:
         with get_connection() as conn:
-            with conn.cursor() as cur:
+            cur = conn.cursor()
+            if using_postgres():
                 cur.execute(
                     "INSERT INTO stock_items (record_text) VALUES (%s)",
                     (cleaned,),
                 )
+            else:
+                cur.execute(
+                    "INSERT INTO stock_items (record_text) VALUES (?)",
+                    (cleaned,),
+                )
             conn.commit()
         return True, "Kayit eklendi."
-    except psycopg.errors.UniqueViolation:
+    except (psycopg_errors.UniqueViolation, sqlite3.IntegrityError):
         return False, "Bu kayit zaten stokta var."
     except Exception as e:
         logger.exception("Kayit ekleme hatasi")
@@ -123,8 +163,10 @@ def add_records_bulk(records: List[str]) -> Tuple[int, int]:
     inserted_count = 0
 
     with get_connection() as conn:
-        with conn.cursor() as cur:
-            for record in cleaned_records:
+        cur = conn.cursor()
+
+        for record in cleaned_records:
+            if using_postgres():
                 cur.execute(
                     """
                     INSERT INTO stock_items (record_text)
@@ -133,7 +175,17 @@ def add_records_bulk(records: List[str]) -> Tuple[int, int]:
                     """,
                     (record,),
                 )
-                inserted_count += cur.rowcount
+            else:
+                cur.execute(
+                    """
+                    INSERT OR IGNORE INTO stock_items (record_text)
+                    VALUES (?)
+                    """,
+                    (record,),
+                )
+
+            inserted_count += cur.rowcount
+
         conn.commit()
 
     skipped_count = len(cleaned_records) - inserted_count
@@ -142,47 +194,76 @@ def add_records_bulk(records: List[str]) -> Tuple[int, int]:
 
 def remove_record(record_text: str) -> bool:
     with get_connection() as conn:
-        with conn.cursor() as cur:
+        cur = conn.cursor()
+        if using_postgres():
             cur.execute(
                 "DELETE FROM stock_items WHERE LOWER(record_text) = LOWER(%s)",
                 (record_text.strip(),),
             )
-            deleted = cur.rowcount
+        else:
+            cur.execute(
+                "DELETE FROM stock_items WHERE LOWER(record_text) = LOWER(?)",
+                (record_text.strip(),),
+            )
+        deleted = cur.rowcount
         conn.commit()
     return deleted > 0
 
 
 def list_records(limit: int = 20) -> List[str]:
     with get_connection() as conn:
-        with conn.cursor() as cur:
+        cur = conn.cursor()
+        if using_postgres():
             cur.execute(
                 "SELECT record_text FROM stock_items ORDER BY id ASC LIMIT %s",
                 (limit,),
             )
-            rows = cur.fetchall()
+        else:
+            cur.execute(
+                "SELECT record_text FROM stock_items ORDER BY id ASC LIMIT ?",
+                (limit,),
+            )
+        rows = cur.fetchall()
     return [row[0] for row in rows]
 
 
 def take_records(amount: int) -> List[str]:
     with get_connection() as conn:
-        with conn.cursor() as cur:
+        cur = conn.cursor()
+
+        if using_postgres():
             cur.execute(
                 "SELECT id, record_text FROM stock_items ORDER BY id ASC LIMIT %s",
                 (amount,),
             )
-            rows = cur.fetchall()
+        else:
+            cur.execute(
+                "SELECT id, record_text FROM stock_items ORDER BY id ASC LIMIT ?",
+                (amount,),
+            )
 
-            if not rows:
-                return []
+        rows = cur.fetchall()
 
-            ids = [row[0] for row in rows]
-            records = [row[1] for row in rows]
+        if not rows:
+            return []
 
+        ids = [row[0] for row in rows]
+        records = [row[1] for row in rows]
+
+        if using_postgres():
             cur.execute(
                 "DELETE FROM stock_items WHERE id = ANY(%s)",
                 (ids,),
             )
+        else:
+            placeholders = ",".join("?" for _ in ids)
+            cur.execute(
+                f"DELETE FROM stock_items WHERE id IN ({placeholders})",
+                ids,
+            )
+
         conn.commit()
+
     return records
 
 
@@ -190,11 +271,20 @@ def write_log(action: str, amount: int, delivered: List[str], chat_id: int) -> N
     delivered_text = "\n".join(delivered)
 
     with get_connection() as conn:
-        with conn.cursor() as cur:
+        cur = conn.cursor()
+        if using_postgres():
             cur.execute(
                 """
                 INSERT INTO stock_logs (action, amount, delivered, chat_id)
                 VALUES (%s, %s, %s, %s)
+                """,
+                (action, amount, delivered_text, chat_id),
+            )
+        else:
+            cur.execute(
+                """
+                INSERT INTO stock_logs (action, amount, delivered, chat_id)
+                VALUES (?, ?, ?, ?)
                 """,
                 (action, amount, delivered_text, chat_id),
             )
@@ -375,7 +465,7 @@ async def txt_yukle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def main() -> None:
-    global BOT_TOKEN, ADMIN_CHAT_ID, DATABASE_URL
+    global BOT_TOKEN, ADMIN_CHAT_ID, DATABASE_URL, DB_MODE
 
     BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
     ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "").strip()
@@ -391,11 +481,12 @@ def main() -> None:
     if not ADMIN_CHAT_ID:
         raise ValueError("ADMIN_CHAT_ID eksik.")
 
-    DATABASE_URL = os.getenv("DATABASE_URL")
-
-if not DATABASE_URL:
-    print("DATABASE_URL yok, sqlite kullanılacak...")
-    DATABASE_URL = "sqlite:///data.db"
+    if DATABASE_URL:
+        DB_MODE = "postgres"
+        logger.info("Postgres kullanilacak.")
+    else:
+        DB_MODE = "sqlite"
+        logger.info("DATABASE_URL yok, sqlite kullanilacak.")
 
     init_db()
 
