@@ -391,8 +391,11 @@ def main() -> None:
     if not ADMIN_CHAT_ID:
         raise ValueError("ADMIN_CHAT_ID eksik.")
 
-    if not DATABASE_URL:
-        raise ValueError("DATABASE_URL eksik.")
+    DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    print("DATABASE_URL yok, sqlite kullanılacak...")
+    DATABASE_URL = "sqlite:///data.db"
 
     init_db()
 
